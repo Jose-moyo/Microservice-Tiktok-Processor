@@ -61,31 +61,35 @@ app.post('/process', async (req, res) => {
     console.log(`[${ts}] Video saved: ${inputFile}`);
 
     // ── 3. FFmpeg: overlay video on background image ─────────────────────────
-    // Background scaled to 1080×1920 (9:16)
-    // Video scaled to 90% = max 972×1728, centered, aspect ratio preserved
-    // Use spawnSync with args array to avoid shell escaping issues (- signs etc.)
+    // Input 0 = TikTok video (finite)  → drives -shortest
+    // Input 1 = background image (-loop 1 = infinite)
+    // Video scaled to 90% of 9:16 canvas (972×1728 max), centered on black bg
     console.log(`[${ts}] Running FFmpeg...`);
     const ffResult = spawnSync(ffmpegStatic, [
+      '-i', inputFile,          // input 0: video (finite duration)
       '-loop', '1',
-      '-i', BACKGROUND,
-      '-i', inputFile,
+      '-i', BACKGROUND,         // input 1: image (looped infinitely)
       '-filter_complex',
-      '[0:v]scale=1080:1920,setsar=1[bg];[1:v]scale=w=972:h=1728:force_original_aspect_ratio=decrease,setsar=1[vid];[bg][vid]overlay=(W-w)/2:(H-h)/2:shortest=1',
+      '[1:v]scale=1080:1920,setsar=1[bg];[0:v]scale=w=972:h=1728:force_original_aspect_ratio=decrease,setsar=1[vid];[bg][vid]overlay=(W-w)/2:(H-h)/2',
+      '-map', '[0]',            // video output from filter
+      '-map', '0:a?',           // audio from video input (if exists)
       '-c:v', 'libx264',
-      '-preset', 'fast',
-      '-crf', '23',
+      '-preset', 'ultrafast',   // fastest encoding — less CPU/memory on Railway
+      '-crf', '26',
+      '-threads', '2',          // limit threads for Railway free tier
       '-c:a', 'aac',
-      '-b:a', '128k',
+      '-b:a', '96k',
       '-movflags', '+faststart',
       '-shortest',
       '-y',
       outputFile
-    ], { timeout: 180000, maxBuffer: 20 * 1024 * 1024 });
+    ], { timeout: 240000, maxBuffer: 20 * 1024 * 1024 });
 
-    if (ffResult.status !== 0) {
-      const errMsg = ffResult.stderr?.toString() || 'FFmpeg unknown error';
-      console.error(`[${ts}] FFmpeg stderr:`, errMsg.slice(-1000));
-      throw new Error(`FFmpeg failed (status ${ffResult.status})`);
+    if (ffResult.status !== 0 || ffResult.signal) {
+      const errMsg = ffResult.stderr?.toString()?.slice(-800) || '';
+      console.error(`[${ts}] FFmpeg failed — status:${ffResult.status} signal:${ffResult.signal}`);
+      console.error(`[${ts}] stderr:`, errMsg);
+      throw new Error(`FFmpeg failed (status:${ffResult.status} signal:${ffResult.signal})`);
     }
     console.log(`[${ts}] FFmpeg done: ${outputFile}`);
 
