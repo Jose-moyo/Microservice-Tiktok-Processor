@@ -1,7 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const ffmpegStatic = require('ffmpeg-static');
-const { execSync } = require('child_process');
+const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const FormData = require('form-data');
@@ -44,7 +44,9 @@ app.post('/process', async (req, res) => {
     const data = tikwm.data?.data;
     if (!data) throw new Error('tikwm API returned no data');
 
-    const videoUrl = data.play || data.play;
+    // hdplay uses BVC2 (ByteDance proprietary codec) — ffmpeg can't decode it
+    // play returns standard H.264 — always use it
+    const videoUrl = data.play || data.hdplay;
     const title    = (data.title || 'Vidéo TikTok').substring(0, 200);
     console.log(`[${ts}] Title: ${title}`);
 
@@ -61,22 +63,30 @@ app.post('/process', async (req, res) => {
     // ── 3. FFmpeg: overlay video on background image ─────────────────────────
     // Background scaled to 1080×1920 (9:16)
     // Video scaled to 90% = max 972×1728, centered, aspect ratio preserved
+    // Use spawnSync with args array to avoid shell escaping issues (- signs etc.)
     console.log(`[${ts}] Running FFmpeg...`);
-    const ffmpegCmd = [
-      ffmpegStatic,
-      '-loop 1',
-      `-i "${BACKGROUND}"`,
-      `-i "${inputFile}"`,
+    const ffResult = spawnSync(ffmpegStatic, [
+      '-loop', '1',
+      '-i', BACKGROUND,
+      '-i', inputFile,
       '-filter_complex',
-      '"[0:v]scale=1080:1920,setsar=1[bg];[1:v]scale=w=972:h=1728:force_original_aspect_ratio=decrease,setsar=1[vid];[bg][vid]overlay=(W-w)/2:(H-h)/2:shortest=1"',
-      '-c:v libx264 -preset fast -crf 23',
-      '-c:a aac -b:a 128k',
-      '-movflags +faststart',
+      '[0:v]scale=1080:1920,setsar=1[bg];[1:v]scale=w=972:h=1728:force_original_aspect_ratio=decrease,setsar=1[vid];[bg][vid]overlay=(W-w)/2:(H-h)/2:shortest=1',
+      '-c:v', 'libx264',
+      '-preset', 'fast',
+      '-crf', '23',
+      '-c:a', 'aac',
+      '-b:a', '128k',
+      '-movflags', '+faststart',
       '-shortest',
-      `-y "${outputFile}"`
-    ].join(' ');
+      '-y',
+      outputFile
+    ], { timeout: 180000, maxBuffer: 20 * 1024 * 1024 });
 
-    execSync(ffmpegCmd, { timeout: 180000 });
+    if (ffResult.status !== 0) {
+      const errMsg = ffResult.stderr?.toString() || 'FFmpeg unknown error';
+      console.error(`[${ts}] FFmpeg stderr:`, errMsg.slice(-1000));
+      throw new Error(`FFmpeg failed (status ${ffResult.status})`);
+    }
     console.log(`[${ts}] FFmpeg done: ${outputFile}`);
 
     // ── 4. Send to Telegram ──────────────────────────────────────────────────
