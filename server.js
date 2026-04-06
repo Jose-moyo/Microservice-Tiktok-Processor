@@ -44,7 +44,7 @@ app.post('/process', async (req, res) => {
     const data = tikwm.data?.data;
     if (!data) throw new Error('tikwm API returned no data');
 
-    const videoUrl = data.hdplay || data.play;
+    const videoUrl = data.play || data.play;
     const title    = (data.title || 'Vidéo TikTok').substring(0, 200);
     console.log(`[${ts}] Title: ${title}`);
 
